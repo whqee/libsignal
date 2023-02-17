@@ -2,17 +2,12 @@ use core::f32;
 use core::f32::consts::PI;
 use core::mem::size_of;
 
-// trait Signal {
-//     fn evaluate(&self, t: f32, op: fn(f32) -> f32) -> f32;
-// }
-
 #[allow(unused)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Type {
     Sin,
     Cos,
     Tan,
-    Mix,
 }
 
 pub struct Wave {
@@ -34,65 +29,52 @@ pub struct Wave {
 }
 
 #[derive(Debug, Clone)]
-pub struct TrigSig {
+struct _TrigSig {
     sig_type: Type,
     freq: f32,
-    /// case常数: amp, _, 0, _
-    /// case函数: a1, a2, freq, offset
-    amp: (f32, f32, f32, f32),
+    amp: f32,
+    offset: f32,
+    op: fn(f32) -> f32,
+}
 
-    /// case常数: offset, _, 0, _
-    /// case函数: a1, a2, freq, offset
-    offset: (f32, f32, f32, f32),
+#[derive(Debug, Clone)]
+pub struct TrigSig {
+    // sig_type: Type,
+    // freq: f32,
+    // amp: f32,
+    // offset: f32,
+    /// sig_type, freq, amp, offset
+    signals: Vec<_TrigSig>,
 }
 
 /// Trigonometric Sigal
 impl TrigSig {
     #[inline]
-    pub fn new(sig_type: Type, freq: f32, amp: f32, offset: f32) -> Self {
+    pub fn new(mut sig_type: Type, freq: f32, amp: f32, mut offset: f32) -> Self {
+        match sig_type {
+            Type::Sin => {}
+            Type::Cos => {
+                offset += PI / 2.0;
+                sig_type = Type::Sin;
+            }
+            Type::Tan => {}
+        };
         TrigSig {
-            sig_type,
-            freq,
-            amp: (amp, 0.0, 0.0, 0.0),
-            offset: (offset, 0.0, 0.0, 0.0),
-        }
-    }
-
-    #[allow(unused)]
-    #[inline]
-    pub fn new_mix(freq: f32, amp: (f32, f32, f32, f32), offset: (f32, f32, f32, f32)) -> Self {
-        TrigSig {
-            sig_type: Type::Mix,
-            freq,
-            amp,
-            offset,
+            signals: vec![_TrigSig {
+                sig_type,
+                freq,
+                amp,
+                offset,
+                op: sig_type.into(),
+            }],
         }
     }
 
     // evaluate a result for time t (s)
-    pub fn evaluate(&self, t: f32, op: fn(f32) -> f32) -> f32 {
-        // self.amp * (op)(2.0 * PI * self.freq * t + self.offset)
-        let amp = if self.amp.2 == 0.0 {
-            self.amp.0
-        } else {
-            let (a1, a2, freq, of) = self.amp;
-
-            (a1 + a2 * (freq * t + of).cos()).sqrt()
-        };
-
-        let offset = if self.offset.2 == 0.0 {
-            self.offset.0
-        } else {
-            let (a1, a2, freq, of) = self.offset;
-
-            // 法一，测试不对。
-            // a1 + a2 * (freq * t + of).tan()
-
-            // 二
-            a1 + (a2 * (freq * t + of).tan()).atan()
-        };
-
-        amp * (op)(2.0 * PI * self.freq * t + offset)
+    pub fn evaluate(&self, t: f32) -> f32 {
+        self.signals.iter().fold(0.0, |acc, x| {
+            acc + x.amp * (x.op)(2.0 * PI * x.freq * t + x.offset)
+        })
     }
 
     /// duration: time length (s),
@@ -103,28 +85,18 @@ impl TrigSig {
     pub fn make_wave(&self, duration: f32, start: f32, framerate: usize) -> Wave {
         let nums = (duration * framerate as f32) as usize;
 
-        let mut wave = Wave {
-            raw: vec![0; nums * size_of::<f32>()],
-        };
-
         let t = (duration as f32) / (nums as f32);
 
-        // let op = self.sig_type.into();
-        let op = match self.sig_type {
-            Type::Sin => f32::sin,
-            Type::Cos => f32::cos,
-            Type::Tan => f32::tan,
-            Type::Mix => f32::sin,
+        let mut wave = Wave {
+            raw: vec![0; size_of::<f32>() * nums], // Vec<u8>
         };
 
-        // wave.raw as Vec<f32>, and push values in, then update the length of raw as Vec<u8>
-        {
-            let ptr_f32 = wave.raw.as_mut_ptr() as *mut f32;
-
-            for i in 0..nums {
-                let val = self.evaluate(start + (i as f32) * t, op);
-
-                unsafe { ptr_f32.add(i).write(val) }
+        // wave.raw as Vec<f32>, and push values in
+        for i in 0..nums {
+            unsafe {
+                (wave.raw.as_mut_ptr() as *mut f32)
+                    .add(i)
+                    .write(self.evaluate(start + (i as f32) * t));
             }
         }
 
@@ -147,154 +119,106 @@ impl Wave {
     }
 }
 
+impl From<Type> for fn(f32) -> f32 {
+    fn from(t: Type) -> Self {
+        match t {
+            Type::Sin => f32::sin,
+            Type::Cos => f32::cos,
+            Type::Tan => f32::tan,
+        }
+    }
+}
+
 impl core::ops::Add for TrigSig {
     type Output = TrigSig;
 
-    #[allow(unused)]
-    fn add(self, rhs: Self) -> Self::Output {
-        // ! 'match' can not match 'fn(f32) -> f32', but 'if else' can do it
-        // match sig_type
-        match self.sig_type {
-            Type::Sin => match rhs.sig_type {
-                Type::Sin => signal_sin_add_sin(self, rhs),
-                Type::Cos => signal_sin_add_cos(self, rhs),
-                Type::Tan => todo!(),
-                Type::Mix => todo!(),
-            },
-            Type::Cos => match rhs.sig_type {
-                Type::Sin => signal_cos_add_sin(self, rhs),
-                Type::Cos => signal_cos_add_cos(self, rhs),
-                Type::Tan => todo!(),
-                Type::Mix => todo!(),
-            },
-            Type::Tan => match rhs.sig_type {
-                Type::Sin => todo!(),
-                Type::Cos => todo!(),
-                Type::Tan => todo!(),
-                Type::Mix => todo!(),
-            },
-            Type::Mix => todo!(),
+    // #[allow(unused)]
+    fn add(self, rhs: TrigSig) -> Self::Output {
+        let mut sum;
+        let sigs;
+
+        if self.signals.len() < rhs.signals.len() {
+            sum = rhs;
+            sigs = self;
+        } else {
+            sum = self;
+            sigs = rhs;
+        }
+
+        // // ! 'match' can not match 'fn(f32) -> f32', but 'if else' can do it
+
+        for i in sigs.signals {
+            if let Some(s) = sum.signals.iter_mut().find(|x| x.freq.eq(&i.freq)) {
+                s.same_freq_add(&i);
+            } else {
+                sum.signals.push(i)
+            }
+        }
+
+        sum
+    }
+}
+
+impl core::ops::AddAssign for TrigSig {
+    fn add_assign(&mut self, rhs: Self) {
+        for i in rhs.signals {
+            if let Some(s) = self.signals.iter_mut().find(|x| x.freq.eq(&i.freq)) {
+                s.same_freq_add(&i);
+            } else {
+                self.signals.push(i)
+            }
         }
     }
 }
 
-#[allow(unused)]
-fn signal_sin_add_sin(sin1: TrigSig, sin2: TrigSig) -> TrigSig {
-    assert_eq!(sin1.sig_type, Type::Sin);
-    assert_eq!(sin2.sig_type, Type::Sin);
+impl _TrigSig {
+    fn same_freq_add(&mut self, sig: &_TrigSig) {
+        assert_eq!(self.freq, sig.freq);
 
-    let s1;
-    let s2;
-    if sin1.freq < sin2.freq {
-        s1 = sin2;
-        s2 = sin1;
-    } else {
-        s1 = sin1;
-        s2 = sin2;
-    }
+        let mut sig = sig.clone();
 
-    let (freq1, freq2, amp1, amp2, of1, of2) = (
-        s1.freq,
-        s2.freq,
-        s1.amp.0,
-        s2.amp.0,
-        s1.offset.0,
-        s2.offset.0,
-    );
+        match self.sig_type {
+            Type::Sin => {}
+            Type::Cos => {
+                self.offset += PI / 2.0;
+                self.sig_type = Type::Sin;
+            }
+            Type::Tan => unimplemented!(),
+        };
 
-    if freq1.eq(&freq2) {
-        let (freq, amp, offset);
+        match sig.sig_type {
+            Type::Sin => {}
+            Type::Cos => {
+                sig.offset += PI / 2.0;
+                sig.sig_type = Type::Sin;
+            }
+            Type::Tan => unimplemented!(),
+        };
 
-        freq = freq1;
-        if amp1.eq(&amp2) {
-            if of1.eq(&of2) {
-                amp = 2.0 * amp1;
-                offset = of1;
+        let (amp1, amp2, of1, of2) = (self.amp, sig.amp, self.offset, sig.offset);
+
+        if amp1 == amp2 {
+            if of1 == of2 {
+                self.amp = 2.0 * amp1;
+                self.offset = of1;
             } else {
-                amp = 2.0 * amp1 * (((of1 - of2) / 2.0).cos());
-                offset = (of1 + of2) / 2.0;
+                self.amp = 2.0 * amp1 * (((of1 - of2) / 2.0).cos());
+                self.offset = (of1 + of2) / 2.0;
             }
         } else {
-            if of1.eq(&of2) {
-                offset = of1;
-                amp = (amp1.powf(2.0) + amp2.powf(2.0) + 2.0 * amp1 * amp2).sqrt();
+            if of1 == of2 {
+                self.offset = of1;
+                self.amp = (amp1.powf(2.0) + amp2.powf(2.0) + 2.0 * amp1 * amp2).sqrt();
             } else {
-                offset = ((amp1 * of1.sin() + amp2 * of2.sin())
+                self.offset = ((amp1 * of1.sin() + amp2 * of2.sin())
                     / (amp1 * of1.cos() + amp2 * of2.cos()))
                 .atan();
-                amp = (amp1.powf(2.0) + amp2.powf(2.0) + 2.0 * amp1 * amp2 * (of1 - of2).cos())
-                    .sqrt();
+                self.amp =
+                    (amp1.powf(2.0) + amp2.powf(2.0) + 2.0 * amp1 * amp2 * (of1 - of2).cos())
+                        .sqrt();
             }
         }
-        TrigSig {
-            sig_type: Type::Sin,
-            freq,
-            amp: (amp, 0.0, 0.0, 0.0),
-            offset: (offset, 0.0, 0.0, 0.0),
-        }
-    } else {
-        let (freq, amp, offset);
-        freq = (freq1 + freq2) / 2.0;
-
-        amp = (
-            amp1.powf(2.0) + amp2.powf(2.0),
-            2.0 * amp1 * amp2,
-            // 法一，测试不对
-            // (freq1 + freq2) / 2.0,
-            // of1 + of2,
-
-            // 二
-            (freq1 - freq2) / 2.0,
-            of1 - of2,
-        );
-
-        offset = (
-            (of1 + of2) / 2.0,
-            // 一，不对
-            // amp1 - amp2,
-            // 二
-            (amp1 - amp2) / (amp1 + amp2),
-            (freq1 - freq2) / 2.0,
-            (of1 - of2) / 2.0,
-        );
-
-        TrigSig {
-            sig_type: Type::Mix,
-            freq,
-            amp,
-            offset,
-        }
     }
-}
-
-#[allow(unused)]
-fn signal_cos_add_cos(mut cos1: TrigSig, mut cos2: TrigSig) -> TrigSig {
-    assert_eq!(cos1.sig_type, Type::Cos);
-    assert_eq!(cos2.sig_type, Type::Cos);
-
-    cos1.offset.0 += PI / 2.0;
-    cos2.offset.0 += PI / 2.0;
-
-    cos1.sig_type = Type::Sin;
-    cos2.sig_type = Type::Sin;
-
-    signal_sin_add_sin(cos1, cos2)
-}
-
-fn signal_cos_add_sin(mut cos: TrigSig, sin: TrigSig) -> TrigSig {
-    assert_eq!(sin.sig_type, Type::Sin);
-    assert_eq!(cos.sig_type, Type::Cos);
-
-    cos.offset.0 += PI / 2.0;
-
-    cos.sig_type = Type::Sin;
-
-    signal_sin_add_sin(cos, sin)
-}
-
-#[inline]
-fn signal_sin_add_cos(sig1: TrigSig, sig2: TrigSig) -> TrigSig {
-    signal_cos_add_sin(sig2, sig1)
 }
 
 // http://spiff.rit.edu/classes/phys207/lectures/beats/add_beats.html
