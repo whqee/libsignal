@@ -35,6 +35,7 @@ struct _TrigSig {
     amp: f32,
     offset: f32,
     op: fn(f32) -> f32,
+    k: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -50,7 +51,7 @@ pub struct TrigSig {
 /// Trigonometric Sigal
 impl TrigSig {
     #[inline]
-    pub fn new(mut sig_type: Type, freq: f32, amp: f32, mut offset: f32) -> Self {
+    pub fn new(mut sig_type: Type, freq: f32, amp: f32, mut offset: f32, k: f32) -> Self {
         match sig_type {
             Type::Sin => {}
             Type::Cos => {
@@ -66,6 +67,7 @@ impl TrigSig {
                 amp,
                 offset,
                 op: sig_type.into(),
+                k,
             }],
         }
     }
@@ -73,7 +75,7 @@ impl TrigSig {
     // evaluate a result for time t (s)
     pub fn evaluate(&self, t: f32) -> f32 {
         self.signals.iter().fold(0.0, |acc, x| {
-            acc + x.amp * (x.op)(2.0 * PI * x.freq * t + x.offset)
+            acc + x.k + x.amp * (x.op)(2.0 * PI * x.freq * t + x.offset)
         })
     }
 
@@ -100,9 +102,32 @@ impl TrigSig {
             }
         }
 
-        println!("Made a new wave, samples length = {} bytes", wave.raw.len());
+        println!(
+            "Made a new wave, samples length = {} bytes, f = {}, T = {}",
+            wave.raw.len(),
+            self.freq_sum(),
+            self.cycle()
+        );
 
         wave
+    }
+
+    #[inline]
+    pub fn freq_sum(&self) -> f32 {
+        if self.signals.len() > 1 {
+            self.signals
+                .iter()
+                .fold(self.signals.first().unwrap().freq, |acc, i| {
+                    (acc + i.freq) / 2.0
+                })
+        } else {
+            self.signals.first().unwrap().freq
+        }
+    }
+
+    #[inline]
+    pub fn cycle(&self) -> f32 {
+        self.signals.len() as f32 / self.freq_sum()
     }
 }
 
@@ -147,11 +172,30 @@ impl core::ops::Add for TrigSig {
 
         // // ! 'match' can not match 'fn(f32) -> f32', but 'if else' can do it
 
-        for i in sigs.signals {
-            if let Some(s) = sum.signals.iter_mut().find(|x| x.freq.eq(&i.freq)) {
-                s.same_freq_add(&i);
-            } else {
-                sum.signals.push(i)
+        // for i in sigs.signals {
+        //     if let Some(s) = sum.signals.iter_mut().find(|x| x.freq.eq(&i.freq)) {
+        //         s.same_freq_add(&i);
+        //     } else {
+        //         sum.signals.push(i)
+        //     }
+        // }
+
+        for s in sigs.signals {
+            for i in 0..sum.signals.len() {
+                if sum.signals[i].freq > s.freq {
+                    sum.signals.insert(i, s);
+                    break;
+                }
+
+                if sum.signals[i].freq == s.freq {
+                    sum.signals[i].same_freq_add(&s);
+                    break;
+                }
+
+                if i + 1 == sum.signals.len() {
+                    sum.signals.push(s);
+                    break;
+                }
             }
         }
 
@@ -161,11 +205,29 @@ impl core::ops::Add for TrigSig {
 
 impl core::ops::AddAssign for TrigSig {
     fn add_assign(&mut self, rhs: Self) {
-        for i in rhs.signals {
-            if let Some(s) = self.signals.iter_mut().find(|x| x.freq.eq(&i.freq)) {
-                s.same_freq_add(&i);
-            } else {
-                self.signals.push(i)
+        // for i in rhs.signals {
+        //     if let Some(s) = self.signals.iter_mut().find(|x| x.freq.eq(&i.freq)) {
+        //         s.same_freq_add(&i);
+        //     } else {
+        //         self.signals.push(i)
+        //     }
+        // }
+        for s in rhs.signals {
+            for i in 0..self.signals.len() {
+                if self.signals[i].freq > s.freq {
+                    self.signals.insert(i, s);
+                    break;
+                }
+
+                if self.signals[i].freq == s.freq {
+                    self.signals[i].same_freq_add(&s);
+                    break;
+                }
+
+                if i + 1 == self.signals.len() {
+                    self.signals.push(s);
+                    break;
+                }
             }
         }
     }
@@ -218,6 +280,8 @@ impl _TrigSig {
                         .sqrt();
             }
         }
+
+        self.k += sig.k
     }
 }
 

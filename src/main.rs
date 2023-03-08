@@ -3,17 +3,17 @@ use std::{fs::File, io::Write};
 mod signal;
 
 fn main() {
-    let (freq, amp, offset) = (880.0, 0.5, 0.0);
-    let sin_sig = signal::TrigSig::new(signal::Type::Sin, freq, amp, offset);
+    let (freq, amp, offset, k) = (880.0, 0.5, 0.0, 0.0);
+    let sin_sig = signal::TrigSig::new(signal::Type::Sin, freq, amp, offset, k);
 
-    let (freq, amp, offset) = (440.0, 1.0, 0.0);
-    let cos_sig = signal::TrigSig::new(signal::Type::Cos, freq, amp, offset);
+    let (freq, amp, offset, k) = (440.0, 1.0, 0.0, 0.0);
+    let cos_sig = signal::TrigSig::new(signal::Type::Cos, freq, amp, offset, k);
 
-    // let tan_sig = signal::Tan::new(freq, amp, offset);
+    // let tan_sig = signal::Tan::new(freq, amp, offset, k);
     // let mut mix_sig = sin_sig.clone() + cos_sig.clone();
 
-    let (freq, amp, offset) = (1000.0, 0.5, 0.0);
-    let mut mix_sig = signal::TrigSig::new(signal::Type::Sin, freq, amp, offset);
+    let (freq, amp, offset, k) = (1000.0, 0.5, 0.0, 0.0);
+    let mut mix_sig = signal::TrigSig::new(signal::Type::Sin, freq, amp, offset, k);
 
     // // 方波
     // for i in [
@@ -30,7 +30,7 @@ fn main() {
 
     // 三角波
     for i in (2..200).map(|x| x as f32) {
-        mix_sig += signal::TrigSig::new(signal::Type::Sin, freq * i, amp / i, offset);
+        mix_sig += signal::TrigSig::new(signal::Type::Sin, freq * i, amp / i, offset, k / i);
     }
 
     let (duration, start, framerate) = (2.0, 0.0, 44100);
