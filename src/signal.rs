@@ -494,27 +494,7 @@ impl core::ops::Add for TrigSig {
             sigs = rhs;
         }
 
-        // // ! 'match' can not match 'fn(Float) -> Float', but 'if else' can do it
-
-        for s in sigs.signals {
-            for i in 0..sum.signals.len() {
-                if sum.signals[i].freq > s.freq {
-                    sum.signals.insert(i, s);
-                    break;
-                }
-
-                if sum.signals[i].freq == s.freq {
-                    sum.signals[i].same_freq_add(&s);
-                    break;
-                }
-
-                if i + 1 == sum.signals.len() {
-                    sum.signals.push(s);
-                    break;
-                }
-            }
-        }
-
+        sum += sigs;
         sum
     }
 }
