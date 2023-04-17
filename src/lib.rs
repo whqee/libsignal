@@ -1,5 +1,4 @@
 #![feature(portable_simd)]
-use core::simd::Simd;
 use core::{mem::size_of, slice};
 
 // type Float = f32;
@@ -20,10 +19,9 @@ use core::f32::consts::PI;
 type C = complex_nums::C32;
 
 pub mod complex_nums;
-// use complex_nums::ComplexNums;
 
 const PI_2: Float = PI * 2.0;
-const PI_4: Float = PI * 4.0;
+// const PI_4: Float = PI * 4.0;
 
 #[allow(unused)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -338,7 +336,8 @@ impl Wave {
 
         // let mut amps = dct_naive_transform(&ys[..]);
 
-        let amps = dct_iv_cpu_multi_threads(ys);
+        let amps = dct_iv(ys);
+        // let amps = dct_iv_cpu_multi_threads(ys);
 
         println!(
             "\n----- len({})/SampleRate {}",
@@ -440,7 +439,14 @@ impl _TrigSig {
                 self.sig_type = Type::Sin;
             }
             Type::Tan => unimplemented!(),
-            Type::ComplexExp => todo!(),
+            Type::ComplexExp => {
+                if sig.sig_type == Type::ComplexExp {
+                    self.amp += sig.amp;
+                    self.k += sig.k;
+                    return;
+                }
+                unimplemented!()
+            }
         };
 
         match sig.sig_type {
@@ -450,7 +456,7 @@ impl _TrigSig {
                 sig.sig_type = Type::Sin;
             }
             Type::Tan => unimplemented!(),
-            Type::ComplexExp => todo!(),
+            Type::ComplexExp => unreachable!(),
         };
 
         let (amp1, amp2, of1, of2) = (self.amp, sig.amp, self.offset, sig.offset);
@@ -490,8 +496,8 @@ pub fn inverse_dct(amps: &[Float]) -> Vec<Float> {
 }
 
 pub fn inverse_dct_multi_threads(amps: &[Float]) -> Vec<Float> {
-    // dct_iv(amps)
-    dct_iv_cpu_multi_threads(amps)
+    dct_iv(amps)
+        // dct_iv_cpu_multi_threads(amps)
         .into_iter()
         .map(|x| x * 2.0 / amps.len() as Float)
         .collect()
@@ -521,19 +527,20 @@ pub fn dct_naive_transform(vector: &[Float]) -> Vec<Float> {
 #[inline]
 /// info: assume len = n, the real frequents = samplerate * (0..n)+0.5 / n
 pub fn dct_iv(v: &[Float]) -> Vec<Float> {
-    #[cfg(any(windos, wasm, unix))]
+    #[cfg(any(windows, unix))]
     return dct_iv_cpu_multi_threads(v);
 
-    #[cfg(not(any(windos, wasm, unix)))]
+    #[cfg(not(any(windows, unix)))]
     return dct_iv_cpu(v);
 }
 
+#[cfg(any(windows, unix))]
 /// info: assume len = n, the real frequents = samplerate * (0..n)+0.5 / n
 pub fn dct_iv_cpu_multi_threads(v: &[Float]) -> Vec<Float> {
     let ys = v;
     let n = ys.len();
 
-    println!("ys.len = {}, n = {}", ys.len(), n);
+    // println!("ys.len = {}, n = {}", ys.len(), n);
 
     let cpus = 12;
     let divs = n / 12;
@@ -612,6 +619,7 @@ pub fn dct_iv_cpu(v: &[Float]) -> Vec<Float> {
 // portable-simd没有提供cos方法，还是慢
 /// info: assume len = n, the real frequents = samplerate * (0..n)+0.5 / n
 pub fn dct_iv_simd(v: &[Float]) -> Vec<Float> {
+    use core::simd::Simd;
     let ys = v;
     let n = ys.len();
 
@@ -707,62 +715,14 @@ pub fn idft(v: &[C]) -> Vec<C> {
     amps
 }
 
-fn even_odds_from_n_complex(n: usize) -> Vec<C> {
-    even_odds(&vec![(0..n).collect::<Vec<usize>>()])
-        .into_iter()
-        .map(|v| C::new(v[0] as Float, 0.0))
-        .collect()
-}
-
-fn even_odds_from_n(n: usize) -> Vec<usize> {
-    even_odds(&vec![(0..n).collect::<Vec<usize>>()])
-        .into_iter()
-        .map(|v| v[0])
-        .collect()
-}
-
-// recursive, 可能会爆栈
-fn even_odds(v: &Vec<Vec<usize>>) -> Vec<Vec<usize>> {
-    let mut new = vec![];
-    for i in v {
-        if i.len() > 1 {
-            for j in even_odds(&even_odd(i)) {
-                new.push(j)
-            }
-        } else {
-            new.push(i.clone())
-        }
-    }
-    new
-}
-
-fn even_odd(x: &[usize]) -> Vec<Vec<usize>> {
-    vec![
-        x.iter()
-            .enumerate()
-            .filter(|(i, _)| i % 2 == 0)
-            .map(|(_, &x)| x)
-            .collect(),
-        x.iter()
-            .enumerate()
-            .filter(|(i, _)| i % 2 != 0)
-            .map(|(_, &x)| x)
-            .collect(),
-    ]
-}
-
 /// assume len = n, the real frequents = samplerate * (0..n) / n
-/// 不是recursive但内部有recursive，太大可能会爆栈
 fn __fft_common(inverse: bool, v: &[C]) -> Vec<C> {
     if v.len() == 1 {
         return v.to_vec();
     }
 
     if v.len() == 2 {
-        let mut amps = vec![C::default(); 2];
-        amps[0] = v[0] + v[1];
-        amps[1] = v[0] - v[1];
-        return amps;
+        return vec![v[0] + v[1], v[0] - v[1]];
     }
 
     assert!(v.len().is_power_of_two());
@@ -789,13 +749,14 @@ fn __fft_common(inverse: bool, v: &[C]) -> Vec<C> {
         neg_pi = -neg_pi;
     }
 
-    // even_odds_from_n_complex： recursive !
-    let mut amps = even_odds_from_n_complex(n);
-    let mut i_amps = 0;
+    // not recursive
+    let mut amps = vec![C::default(); n];
+    let bits_log2n = size_of::<usize>() * 8 - (n as Float).log2() as usize;
+    let mut i_amps = 0usize;
     loop {
         let j_amps = i_amps + 1;
-        let i_ys = amps[i_amps].real as usize;
-        let j_ys = amps[j_amps].real as usize;
+        let i_ys = i_amps.reverse_bits() >> bits_log2n;
+        let j_ys = j_amps.reverse_bits() >> bits_log2n;
 
         amps[i_amps] = ys[i_ys] + ys[j_ys];
         amps[j_amps] = ys[i_ys] - ys[j_ys];
@@ -808,7 +769,7 @@ fn __fft_common(inverse: bool, v: &[C]) -> Vec<C> {
 
     for i in 1..n_sqrt_2 {
         let nums_a_time = 2usize.pow(i as u32);
-
+        let neg_pi_div_nums_a_time = neg_pi / nums_a_time as Float;
         // when f = 0
         let mut j = 0;
         loop {
@@ -821,43 +782,122 @@ fn __fft_common(inverse: bool, v: &[C]) -> Vec<C> {
             }
             break;
         }
-
-        let neg_pi_div_nums_a_time = neg_pi / nums_a_time as Float;
-
-        for f in 1..nums_a_time {
+        for mut f in 1..nums_a_time {
             let w = C::complex_exp(neg_pi_div_nums_a_time * f as Float);
-            let mut j = f;
             loop {
-                let tmp = amps[j];
-                amps[j] = tmp + w * amps[j + nums_a_time];
-                amps[j + nums_a_time] = tmp - w * amps[j + nums_a_time];
-                j += nums_a_time + nums_a_time;
-                if j < n {
+                let tmp = amps[f];
+                amps[f] = tmp + w * amps[f + nums_a_time];
+                amps[f + nums_a_time] = tmp - w * amps[f + nums_a_time];
+                f += nums_a_time + nums_a_time;
+                if f < n {
                     continue;
                 }
                 break;
             }
         }
     }
-
     amps
 }
 
 pub fn fft(v: &[C]) -> Vec<C> {
-    if v.len().is_power_of_two() {
-        __fft_common(false, v)
-    } else {
-        todo!()
+    if v.len() <= 1 {
+        return v.to_vec();
+    }
+    let mut n = 1;
+    let mut left = v.len();
+    let mut out = vec![];
+    loop {
+        let mut t = 2usize.pow(n);
+        if t < left {
+            n += 1;
+        } else {
+            let start = v.len() - left;
+            if t == left {
+                out.append(&mut __fft_common(false, &v[start..v.len()]));
+                return out;
+            } else {
+                println!(
+                    "v.len n left start t {} {} {} {} {}",
+                    v.len(),
+                    n,
+                    left,
+                    start,
+                    t
+                );
+                t /= 2;
+                out.append(&mut __fft_common(false, &v[start..start + t]));
+                left -= t;
+                n = 0;
+            }
+        }
     }
 }
 
 pub fn ifft(v: &[C]) -> Vec<C> {
-    if v.len().is_power_of_two() {
-        __fft_common(true, v)
-    } else {
-        todo!()
+    if v.len() <= 1 {
+        return v.to_vec();
     }
-    .into_iter()
-    .map(|x| x.div(v.len() as Float))
-    .collect()
+    let mut n = 1;
+    let mut left = v.len();
+    let mut out = vec![];
+    loop {
+        let mut t = 2usize.pow(n);
+        if t < left {
+            n += 1;
+        } else {
+            let start = v.len() - left;
+            if t == left {
+                out.append(&mut __fft_common(true, &v[start..v.len()]));
+                out[start..v.len()].iter_mut().for_each(|x| {
+                    (*x) = (*x).div(t as Float);
+                });
+                return out;
+            } else {
+                t /= 2;
+                out.append(&mut __fft_common(true, &v[start..start + t]));
+                out[start..start + t].iter_mut().for_each(|x| {
+                    (*x) = (*x).div(t as Float);
+                });
+                left -= t;
+                n = 0;
+            }
+        }
+    }
+}
+
+pub fn rfft(v: &[Float]) -> Vec<C> {
+    fft(&(v.iter().map(|&x| C::new(x, 0.0)).collect::<Vec<C>>()))
+}
+
+pub fn irfft(v: &[C]) -> Vec<Float> {
+    let mut n = 0;
+    let mut left = v.len();
+    let mut out = vec![];
+    loop {
+        let mut t = 2usize.pow(n);
+        if t < left {
+            n += 1;
+        } else {
+            let start = v.len() - left;
+            if t == left {
+                out.append(
+                    &mut __fft_common(true, &v[start..v.len()])
+                        .iter_mut()
+                        .map(|x| (x).real / (t as Float))
+                        .collect(),
+                );
+                return out;
+            } else {
+                t /= 2;
+                out.append(
+                    &mut __fft_common(true, &v[start..start + t])
+                        .iter_mut()
+                        .map(|x| (x).real / (t as Float))
+                        .collect(),
+                );
+                left -= t;
+                n = 0;
+            }
+        }
+    }
 }
