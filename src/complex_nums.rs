@@ -160,8 +160,26 @@ impl From<f64> for C32 {
     }
 }
 
+impl From<f32> for C32 {
+    fn from(value: f32) -> Self {
+        Self {
+            real: value as f32,
+            image: 0.0 as f32,
+        }
+    }
+}
+
 impl From<f32> for C64 {
     fn from(value: f32) -> Self {
+        Self {
+            real: value as f64,
+            image: 0.0 as f64,
+        }
+    }
+}
+
+impl From<f64> for C64 {
+    fn from(value: f64) -> Self {
         Self {
             real: value as f64,
             image: 0.0 as f64,
