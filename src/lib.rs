@@ -901,3 +901,97 @@ pub fn irfft(v: &[C]) -> Vec<Float> {
         }
     }
 }
+
+pub fn correlate_slow(ys: &[Float], window: &[Float]) -> Vec<Float> {
+    assert!(ys.len() >= window.len());
+    let ys_len = ys.len();
+    
+    let mut ys_padded = vec![0.0; window.len() - 1];
+    ys_padded.extend_from_slice(&ys);
+    ys_padded.extend(vec![0.0; window.len() - 1]);
+
+    let mut window = window.to_vec();
+    let gap = ys_padded.len() - &window.len();
+    // pad 0
+    window.extend_from_slice(&vec![0.0; gap]);
+
+    let mut smoothed = vec![0.0; ys_padded.len()];
+    for i in 0..ys_padded.len() {
+        smoothed[i] = {
+            let mut sum = 0.0;
+            for i in 0..ys_padded.len() {
+                sum += ys_padded[i] * window[i]
+            }
+            sum
+        };
+        window.rotate_right(1);
+    }
+    smoothed[..ys_len].to_vec()
+}
+
+pub fn correlate(ys: &[Float], window: &[Float]) -> Vec<Float> {
+    let (ys_len, window_len) = (ys.len(), window.len());
+
+    let mut out = vec![0.0; ys_len];
+    let t = window_len - 1;
+
+    for n in 0..window_len {
+        for m in 0..=n {
+            out[n] += ys[n - m] * window[t - m]
+        }
+    }
+    for n in window_len..ys_len {
+        for m in 0..window_len {
+            out[n] += ys[n - m] * window[t - m]
+        }
+    }
+    out[..ys_len].to_owned()
+}
+
+/// Circular Version
+pub fn convolve2(ys: &[Float], window: &[Float]) -> Vec<Float> {
+    let window: Vec<Float> = window.iter().rev().map(|x| *x).collect();
+    correlate(ys, &window)
+}
+
+pub fn convolve(ys: &[Float], window: &[Float]) -> Vec<Float> {
+    let (ys_len, window_len) = (ys.len(), window.len());
+
+    let mut out = vec![0.0; ys_len];
+    for n in 0..window_len {
+        for m in 0..=n {
+            out[n] += ys[n - m] * window[m]
+        }
+    }
+    for n in window_len..ys_len {
+        for m in 0..window_len {
+            out[n] += ys[n - m] * window[m]
+        }
+    }
+    out[..ys_len].to_owned()
+}
+
+/// FFT Version
+pub fn fft_correlate(ys: &[Float], window: &[Float]) -> Vec<Float> {
+    let pad_zero = |v: &mut Vec<Float>, n: usize| v.extend(vec![0.0; n]);
+
+    let mut ys_padded = ys.to_owned();
+    let mut padded = window.to_owned();
+    // pad 0
+    pad_zero(&mut ys_padded, ys.len());
+    pad_zero(&mut padded, ys_padded.len() - window.len());
+
+    let rfft_padded = rfft(&padded);
+    let mut rfft_ys = rfft(&ys_padded);
+
+    for i in 0..rfft_ys.len() {
+        rfft_ys[i] *= rfft_padded[i];
+    }
+    irfft(&rfft_ys)[..ys.len()].to_owned()
+}
+
+#[inline]
+pub fn fft_convolve(ys: &[Float], window: &[Float]) -> Vec<Float> {
+    let window: Vec<Float> = window.iter().rev().map(|x| *x).collect();
+    fft_correlate(ys, &window)
+}
