@@ -39,24 +39,24 @@ pub enum Type {
 /// ref https://blog.csdn.net/hjx5200/article/details/107025477
 pub struct Wave {
     /// The RIFF Chunk
-    chunk_id: u32, // ASCII码“0x52494646”对应字母“RIFF”
-    chunk_size: u32, // 块大小是指除去ChunkID与ChunkSize的剩余部分有多少字节数据。注意：小尾字节序数。
-    format: u32, // ASCII码“0x57415645”对应字母“WAVE”。该块由两个子块组成，一个“fmt”块用于详细说明数据格式，一个“data”块包含实际的样本数据。
+    pub chunk_id: u32, // ASCII码“0x52494646”对应字母“RIFF”
+    pub chunk_size: u32, // 块大小是指除去ChunkID与ChunkSize的剩余部分有多少字节数据。注意：小尾字节序数。
+    pub format: u32, // ASCII码“0x57415645”对应字母“WAVE”。该块由两个子块组成，一个“fmt”块用于详细说明数据格式，一个“data”块包含实际的样本数据。
 
     /// The 'fmt' sub-chunk
-    subchunk1_id: u32, // ASCII码“0x666d7420”对应字母“fmt ”。
-    subchunk1_size: u32, // 如果文件采用PCM编码，则该子块剩余字节数为16。
-    audio_format: u16, // 如果文件采用PCM编码(线性量化)，则AudioFormat=1。AudioFormat代表不同的压缩方式，表二说明了相应的压缩方式。
-    num_channels: u16, // 声道数，单声道（Mono）为1,双声道（Stereo）为2。
-    sample_rate: u32,
-    byterate: u32,        // 传输速率，单位：Byte/s。
-    blockalign: u16,      // 一个样点（包含所有声道）的字节数。
-    bits_per_sample: u16, // 每个样点对应的位数。
+    pub subchunk1_id: u32, // ASCII码“0x666d7420”对应字母“fmt ”。
+    pub subchunk1_size: u32, // 如果文件采用PCM编码，则该子块剩余字节数为16。
+    pub audio_format: u16, // 如果文件采用PCM编码(线性量化)，则AudioFormat=1。AudioFormat代表不同的压缩方式，表二说明了相应的压缩方式。
+    pub num_channels: u16, // 声道数，单声道（Mono）为1,双声道（Stereo）为2。
+    pub sample_rate: u32,
+    pub byterate: u32,        // 传输速率，单位：Byte/s。
+    pub blockalign: u16,      // 一个样点（包含所有声道）的字节数。
+    pub bits_per_sample: u16, // 每个样点对应的位数。
     /// extra .. (略)
 
     /// The 'data' sub-chunk
-    subchunk2_id: u32, // ASCII码“0x64617461”对应字母 “data”。
-    subchunk2_size: u32,  // 实际样本数据的大小（单位：字节）。
+    pub subchunk2_id: u32, // ASCII码“0x64617461”对应字母 “data”。
+    pub subchunk2_size: u32,  // 实际样本数据的大小（单位：字节）。
     pub raw: Vec<u8>,
 }
 
@@ -115,7 +115,7 @@ impl TrigSig {
     // }
 
     // evaluate a result for time t (s)
-    fn evaluate(&self, t: Float) -> Float {
+    pub fn evaluate(&self, t: Float) -> Float {
         let two_pi_t = PI_2 * t;
         self.signals.iter().fold(0.0, |acc, x| {
             acc + x.k + x.amp * (x.op)(two_pi_t * x.freq + x.offset)
@@ -129,7 +129,7 @@ impl TrigSig {
     ///   // = k + [ A * e^x(t) ] * (cos1 + j * sin1)
     ///   // = {k +  A * e^x(t) * cos1 }  +  { j * sin1 * A * e^x(t) }
     ///   = k + A * e^x(t) * ComplexNums::<Float>::exp_of_j()
-    fn evaluate_complex(&self, t: Float) -> C {
+    pub fn evaluate_complex(&self, t: Float) -> C {
         let two_pi_t = PI_2 * t;
         self.signals.iter().fold(C::default(), |acc, x| {
             acc + C::complex_exp(two_pi_t * x.freq + x.offset)
@@ -170,6 +170,33 @@ impl TrigSig {
             self.freq(),
             self.cycle()
         );
+        wave
+    }
+
+    /// duration: time length (s),
+    ///
+    /// start: time start (s),
+    ///
+    /// framerate: wave sample rate (Hz), such as 11025, 44100, 48000
+    ///
+    /// output: Vec<(t, y)>
+    pub fn make_wave_with_time(
+        &self,
+        duration: Float,
+        start: Float,
+        framerate: usize,
+    ) -> Vec<(Float, Float)> {
+        let nums = (duration * framerate as Float) as usize;
+
+        // let t = (duration as Float) / (nums as Float);
+        let t = (1 as Float) / (framerate as Float);
+        let mut wave = vec![(0.0, 0.0); size_of::<Float>() * nums];
+
+        for i in 0..wave.len() {
+            // unsafe { ys.add(i).write(self.evaluate(start + (i as Float) * t)) }
+            let t_now = (i as Float) * t;
+            wave[i] = (t_now, self.evaluate(start + t_now));
+        }
         wave
     }
 
@@ -902,10 +929,11 @@ pub fn irfft(v: &[C]) -> Vec<Float> {
     }
 }
 
-pub fn correlate_slow(ys: &[Float], window: &[Float]) -> Vec<Float> {
+// slower
+pub fn correlate_padded(ys: &[Float], window: &[Float]) -> Vec<Float> {
     assert!(ys.len() >= window.len());
     let ys_len = ys.len();
-    
+
     let mut ys_padded = vec![0.0; window.len() - 1];
     ys_padded.extend_from_slice(&ys);
     ys_padded.extend(vec![0.0; window.len() - 1]);
@@ -995,3 +1023,24 @@ pub fn fft_convolve(ys: &[Float], window: &[Float]) -> Vec<Float> {
     let window: Vec<Float> = window.iter().rev().map(|x| *x).collect();
     fft_correlate(ys, &window)
 }
+
+/// Parameters: n:
+///                 Number of points in the output window.
+///                 If zero, an empty array is returned.
+///                 An exception is thrown when it is negative.
+///             std:
+///                 The standard deviation, sigma.
+///
+pub fn gaussian_window(n: usize, std: Float) -> Vec<Float> {
+    let t = (n as Float - 1.0) / 2.0;
+    let sig2 = 2.0 * std * std;
+
+    let mut out = vec![0.0; n];
+
+    for i in 0..n {
+        out[i] = (-(i as Float - t).powi(2) / sig2).exp()
+    }
+    out
+}
+
+pub fn derivative() {}
