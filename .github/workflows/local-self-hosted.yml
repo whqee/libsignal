@@ -1,0 +1,43 @@
+name: Local Manjaro Rust validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: libsignal-local-validation
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    # Only allow dispatch from the default branch. The source under test is
+    # pinned below to audit-fixes_by_chatgpt, never taken from arbitrary input.
+    if: github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, linux, x64, libsignal-local]
+    timeout-minutes: 60
+    steps:
+      - name: Checkout review branch
+        uses: actions/checkout@v4.2.2
+        with:
+          ref: audit-fixes_by_chatgpt
+          persist-credentials: false
+          clean: true
+
+      - name: Show local toolchain
+        run: |
+          uname -a
+          rustc --version
+          cargo --version
+          nproc
+          git status --short --branch
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Compile and test
+        run: cargo test --all-targets -j "$(nproc)"
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
