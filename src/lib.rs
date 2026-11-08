@@ -1,5 +1,5 @@
 #![feature(portable_simd)]
-use core::{mem::size_of, slice};
+use core::mem::size_of;
 
 // type Float = f32;
 // use core::f32::consts::PI;
@@ -152,14 +152,14 @@ impl TrigSig {
         let mut wave = Wave::new_default(vec![0; size_of::<Float>() * nums]);
         wave.set_num_channels(1);
         wave.set_samplerate(framerate as u32);
-        wave.set_bits_per_sample(size_of::<Float>() as u16);
+        wave.set_bits_per_sample((size_of::<Float>()*8) as u16);
         wave.subchunk2_size = (size_of::<Float>() * nums) as u32;
 
         // let ys = wave.raw.as_mut_ptr() as *mut Float;
 
         for i in 0..wave.raw.len() / size_of::<Float>() {
             // unsafe { ys.add(i).write(self.evaluate(start + (i as Float) * t)) }
-            wave.raw_as_mut_float()[i] = self.evaluate(start + (i as Float) * t);
+            wave.set_float_sample(i, self.evaluate(start + (i as Float) * t));
         }
 
         println!(
@@ -190,7 +190,7 @@ impl TrigSig {
 
         // let t = (duration as Float) / (nums as Float);
         let t = (1 as Float) / (framerate as Float);
-        let mut wave = vec![(0.0, 0.0); size_of::<Float>() * nums];
+        let mut wave = vec![(0.0, 0.0); nums];
 
         for i in 0..wave.len() {
             // unsafe { ys.add(i).write(self.evaluate(start + (i as Float) * t)) }
@@ -223,7 +223,7 @@ impl TrigSig {
 
         for i in 0..wave.raw.len() / size_of::<Float>() {
             // unsafe { ys.add(i).write(self.evaluate(start + (i as Float) * t)) }
-            wave.raw_as_mut_float()[i] = self.evaluate_complex(start + (i as Float) * t).real;
+            wave.set_float_sample(i, self.evaluate_complex(start + (i as Float) * t).real);
         }
 
         println!(
@@ -265,23 +265,20 @@ impl Wave {
     }
 
     #[inline]
-    pub fn raw_as_float(&self) -> &[Float] {
-        unsafe {
-            slice::from_raw_parts(
-                self.raw.as_ptr() as *mut Float,
-                self.raw.len() / size_of::<Float>(),
-            )
-        }
-    }
-
+    /// Decode little-endian samples without relying on Vec<u8> alignment.
     #[inline]
-    pub fn raw_as_mut_float(&mut self) -> &mut [Float] {
-        unsafe {
-            slice::from_raw_parts_mut(
-                self.raw.as_mut_ptr() as *mut Float,
-                self.raw.len() / size_of::<Float>(),
-            )
-        }
+    pub fn raw_as_float(&self) -> Vec<Float> {
+        self.raw.chunks_exact(size_of::<Float>()).map(|b| Float::from_le_bytes(b.try_into().expect("exact float-sized chunk"))).collect()
+    }
+    /// Returns a decoded copy; mutating it does not update the WAV payload.
+    #[inline]
+    pub fn raw_as_mut_float(&mut self) -> Vec<Float> { self.raw_as_float() }
+    /// Write one sample to the little-endian payload.
+    pub fn set_float_sample(&mut self,index:usize,value:Float) {
+        let start=index.checked_mul(size_of::<Float>()).expect("sample offset overflow");
+        let end=start+size_of::<Float>();
+        self.raw[start..end].copy_from_slice(&value.to_le_bytes());
+        self.subchunk2_size=self.raw.len() as u32;
     }
 
     #[inline]
@@ -295,16 +292,16 @@ impl Wave {
     pub fn new_default(raw: Vec<u8>) -> Self {
         Self {
             chunk_id: u32::from_le_bytes(*b"RIFF"),     // b"RIFF"
-            chunk_size: 9 * 4 + raw.len() as u32,       // 9 * 4B + sizeof raw
+            chunk_size: 36 + raw.len() as u32,          // RIFF payload size
             format: u32::from_le_bytes(*b"WAVE"),       // 'WAVE' - 0x57415645
             subchunk1_id: u32::from_le_bytes(*b"fmt "), // b"fmt "
             subchunk1_size: 16,                         // pcm->16
-            audio_format: 1,                            // pcm/uncompressed
+            audio_format: 3,                            // IEEE float
             num_channels: 2,
             sample_rate: 44100,
-            byterate: 44100 * 2 * 2, // sample_rate * num_channels * 2
+            byterate: 44100 * 2 * size_of::<Float>() as u32,
             blockalign: 2 * size_of::<Float>() as u16, // num_channels * bits_persamples
-            bits_per_sample: size_of::<Float>() as u16, // bits
+            bits_per_sample: (size_of::<Float>() * 8) as u16, // bits
             subchunk2_id: u32::from_le_bytes(*b"data"), // b"data"
             subchunk2_size: raw.len() as u32, // size of raw
             raw,
@@ -312,28 +309,16 @@ impl Wave {
     }
 
     #[inline]
-    pub fn set_samplerate(&mut self, samplerate: u32) {
-        self.sample_rate = samplerate;
-        self.byterate = samplerate * self.num_channels as u32 * 2;
-    }
-
+    pub fn set_samplerate(&mut self,samplerate:u32){self.sample_rate=samplerate;self.byterate=samplerate.saturating_mul(self.blockalign as u32);}
     #[inline]
-    pub fn set_bits_per_sample(&mut self, bits: u16) {
-        self.bits_per_sample = bits;
-        self.blockalign = bits * self.num_channels;
-    }
-
+    pub fn set_bits_per_sample(&mut self,bits:u16){self.bits_per_sample=bits;self.blockalign=self.num_channels.saturating_mul(bits.div_ceil(8));self.byterate=self.sample_rate.saturating_mul(self.blockalign as u32);}
     #[inline]
-    pub fn set_num_channels(&mut self, nums: u16) {
-        self.num_channels = nums;
-        self.byterate = self.sample_rate * self.num_channels as u32 * 2;
-        self.blockalign = self.num_channels * self.num_channels;
-    }
+    pub fn set_num_channels(&mut self,nums:u16){self.num_channels=nums;self.blockalign=nums.saturating_mul(self.bits_per_sample.div_ceil(8));self.byterate=self.sample_rate.saturating_mul(self.blockalign as u32);}
 
     pub fn into_vec_u8(mut self) -> Vec<u8> {
-        self.chunk_size += self.subchunk2_size;
-        let mut v = vec![];
-        v.extend_from_slice(&self.chunk_id.to_le_bytes());
+        self.subchunk2_size=self.raw.len() as u32;
+        self.chunk_size=36u32.saturating_add(self.subchunk2_size);
+        let mut v=Vec::with_capacity(44+self.raw.len());
         v.extend_from_slice(&self.chunk_id.to_le_bytes());
         v.extend_from_slice(&self.chunk_size.to_le_bytes());
         v.extend_from_slice(&self.format.to_le_bytes());
@@ -347,9 +332,7 @@ impl Wave {
         v.extend_from_slice(&self.bits_per_sample.to_le_bytes());
         v.extend_from_slice(&self.subchunk2_id.to_le_bytes());
         v.extend_from_slice(&self.subchunk2_size.to_le_bytes());
-        println!("len {}", v.len());
         v.append(&mut self.raw);
-        println!("len {}, raw len {}", v.len(), self.subchunk2_size);
         v
     }
 
@@ -363,7 +346,7 @@ impl Wave {
 
         // let mut amps = dct_naive_transform(&ys[..]);
 
-        let amps = dct_iv(ys);
+        let amps = dct_iv(&ys);
         // let amps = dct_iv_cpu_multi_threads(ys);
 
         println!(
@@ -563,61 +546,10 @@ pub fn dct_iv(v: &[Float]) -> Vec<Float> {
 
 #[cfg(any(windows, unix))]
 /// info: assume len = n, the real frequents = samplerate * (0..n)+0.5 / n
-pub fn dct_iv_cpu_multi_threads(v: &[Float]) -> Vec<Float> {
-    let ys = v;
-    let n = ys.len();
-
-    // println!("ys.len = {}, n = {}", ys.len(), n);
-
-    let cpus = 12;
-    let divs = n / 12;
-
-    let mut ranges: Vec<_> = (0..cpus - 1).map(|i| i * divs..(i + 1) * divs).collect();
-    ranges.push((cpus - 1) * divs..n);
-
-    // prepare vectors
-    let ts: Vec<Float> = (0..n).map(|x| (x as Float + 0.5) / n as Float).collect();
-    // info: assume len = n, the real frequents = samplerate * (0..n) / n
-    let fs_2_pi: Vec<Float> = (0..n).map(|x| (x as Float + 0.5) * PI).collect();
-    let mut amps = vec![0.0; n];
-
-    let ts_ptr = ts.as_ptr() as usize;
-    let ts_len = ts.len();
-
-    let fs_2_pi_ptr = fs_2_pi.as_ptr() as usize;
-    let fs_2_pi_len = fs_2_pi.len();
-
-    let ys_ptr = ys.as_ptr() as usize;
-    let ys_len = ys.len();
-
-    let amps_ptr = amps.as_mut_ptr() as usize;
-    let amps_len = amps.len();
-
-    let mut handles = vec![];
-    for range in ranges {
-        handles.push(std::thread::spawn(move || {
-            // safe
-            let ts = unsafe { slice::from_raw_parts(ts_ptr as *const Float, ts_len) };
-            let fs_2_pi =
-                unsafe { slice::from_raw_parts(fs_2_pi_ptr as *const Float, fs_2_pi_len) };
-            let ys = unsafe { slice::from_raw_parts(ys_ptr as *const Float, ys_len) };
-
-            let amps = unsafe { slice::from_raw_parts_mut(amps_ptr as *mut Float, amps_len) };
-
-            for j in range {
-                let mut amp = 0.0;
-                for i in 0..n {
-                    amp += (fs_2_pi[j] * ts[i]).cos() * ys[i]
-                }
-                amps[j] = amp;
-            }
-        }));
-    }
-    handles
-        .into_iter()
-        .for_each(|handle| handle.join().unwrap());
-
-    amps
+pub fn dct_iv_cpu_multi_threads(v:&[Float])->Vec<Float>{
+ let n=v.len();if n==0{return Vec::new();}let workers=std::thread::available_parallelism().map(usize::from).unwrap_or(1).min(n);let chunk_size=n.div_ceil(workers);let mut out=vec![0.0;n];
+ std::thread::scope(|scope|{for(ci,chunk)in out.chunks_mut(chunk_size).enumerate(){let start=ci*chunk_size;scope.spawn(move||{for(li,result)in chunk.iter_mut().enumerate(){let k=start+li;let mut sum=0.0;for(j,&sample)in v.iter().enumerate(){sum+=sample*(PI*(j as Float+0.5)*(k as Float+0.5)/n as Float).cos();}*result=sum;}});}});
+ out
 }
 
 /// info: assume len = n, the real frequents = samplerate * (0..n)+0.5 / n
@@ -625,7 +557,7 @@ pub fn dct_iv_cpu(v: &[Float]) -> Vec<Float> {
     let ys = v;
     let n = ys.len();
 
-    println!("ys.len = {}, n = {}", ys.len(), n);
+    if n==0{return Vec::new();}
 
     let ts: Vec<Float> = (0..n).map(|x| (x as Float + 0.5) / n as Float).collect();
     // let fs: Vec<Float> = (0..n).map(|x| (x as Float + 0.5) / 2.0).collect();
@@ -742,192 +674,22 @@ pub fn idft(v: &[C]) -> Vec<C> {
     amps
 }
 
-/// assume len = n, the real frequents = samplerate * (0..n) / n
-fn __fft_common(inverse: bool, v: &[C]) -> Vec<C> {
-    if v.len() == 1 {
-        return v.to_vec();
-    }
-
-    if v.len() == 2 {
-        return vec![v[0] + v[1], v[0] - v[1]];
-    }
-
-    assert!(v.len().is_power_of_two());
-
-    let sqrt_usize = |mut x: usize| {
-        let mut n = 1_usize;
-        // let mut x = v.len();
-        loop {
-            x /= 2;
-            if x == 1 {
-                break;
-            }
-            n += 1;
-        }
-        n
-    };
-    let n_sqrt_2 = sqrt_usize(v.len());
-
-    let ys = v;
-    let n = ys.len();
-
-    let mut neg_pi = -(PI);
-    if inverse {
-        neg_pi = -neg_pi;
-    }
-
-    // not recursive
-    let mut amps = vec![C::default(); n];
-    let bits_log2n = size_of::<usize>() * 8 - (n as Float).log2() as usize;
-    let mut i_amps = 0usize;
-    loop {
-        let j_amps = i_amps + 1;
-        let i_ys = i_amps.reverse_bits() >> bits_log2n;
-        let j_ys = j_amps.reverse_bits() >> bits_log2n;
-
-        amps[i_amps] = ys[i_ys] + ys[j_ys];
-        amps[j_amps] = ys[i_ys] - ys[j_ys];
-
-        i_amps += 2;
-        if i_amps >= n {
-            break;
-        }
-    }
-
-    for i in 1..n_sqrt_2 {
-        let nums_a_time = 2usize.pow(i as u32);
-        let neg_pi_div_nums_a_time = neg_pi / nums_a_time as Float;
-        // when f = 0
-        let mut j = 0;
-        loop {
-            let tmp = amps[j];
-            amps[j] = tmp + amps[j + nums_a_time];
-            amps[j + nums_a_time] = tmp - amps[j + nums_a_time];
-            j += nums_a_time + nums_a_time;
-            if j < n {
-                continue;
-            }
-            break;
-        }
-        for mut f in 1..nums_a_time {
-            let w = C::complex_exp(neg_pi_div_nums_a_time * f as Float);
-            loop {
-                let tmp = amps[f];
-                amps[f] = tmp + w * amps[f + nums_a_time];
-                amps[f + nums_a_time] = tmp - w * amps[f + nums_a_time];
-                f += nums_a_time + nums_a_time;
-                if f < n {
-                    continue;
-                }
-                break;
-            }
-        }
-    }
-    amps
+/// Iterative radix-2 Cooley-Tukey FFT.
+fn fft_radix2(v:&[C],inverse:bool)->Vec<C>{
+ let n=v.len();if n==0{return Vec::new();}let mut out=v.to_vec();let mut j=0usize;
+ for i in 1..n{let mut bit=n>>1;while j&bit!=0{j^=bit;bit>>=1;}j^=bit;if i<j{out.swap(i,j);}}
+ let mut width=2usize;while width<=n{let half=width/2;let sign=if inverse{1.0}else{-1.0};let step=sign*PI_2/width as Float;
+ for base in (0..n).step_by(width){for off in 0..half{let w=C::complex_exp(step*off as Float);let a=out[base+off];let b=out[base+off+half]*w;out[base+off]=a+b;out[base+off+half]=a-b;}}
+ if width==n{break;}width*=2;}if inverse{for x in &mut out{*x=(*x).div(n as Float);}}out
 }
-
-pub fn fft(v: &[C]) -> Vec<C> {
-    if v.len() <= 1 {
-        return v.to_vec();
-    }
-    let mut n = 1;
-    let mut left = v.len();
-    let mut out = vec![];
-    loop {
-        let mut t = 2usize.pow(n);
-        if t < left {
-            n += 1;
-        } else {
-            let start = v.len() - left;
-            if t == left {
-                out.append(&mut __fft_common(false, &v[start..v.len()]));
-                return out;
-            } else {
-                println!(
-                    "v.len n left start t {} {} {} {} {}",
-                    v.len(),
-                    n,
-                    left,
-                    start,
-                    t
-                );
-                t /= 2;
-                out.append(&mut __fft_common(false, &v[start..start + t]));
-                left -= t;
-                n = 0;
-            }
-        }
-    }
-}
-
-pub fn ifft(v: &[C]) -> Vec<C> {
-    if v.len() <= 1 {
-        return v.to_vec();
-    }
-    let mut n = 1;
-    let mut left = v.len();
-    let mut out = vec![];
-    loop {
-        let mut t = 2usize.pow(n);
-        if t < left {
-            n += 1;
-        } else {
-            let start = v.len() - left;
-            if t == left {
-                out.append(&mut __fft_common(true, &v[start..v.len()]));
-                out[start..v.len()].iter_mut().for_each(|x| {
-                    (*x) = (*x).div(t as Float);
-                });
-                return out;
-            } else {
-                t /= 2;
-                out.append(&mut __fft_common(true, &v[start..start + t]));
-                out[start..start + t].iter_mut().for_each(|x| {
-                    (*x) = (*x).div(t as Float);
-                });
-                left -= t;
-                n = 0;
-            }
-        }
-    }
-}
-
-pub fn rfft(v: &[Float]) -> Vec<C> {
-    fft(&(v.iter().map(|&x| C::new(x, 0.0)).collect::<Vec<C>>()))
-}
-
-pub fn irfft(v: &[C]) -> Vec<Float> {
-    let mut n = 0;
-    let mut left = v.len();
-    let mut out = vec![];
-    loop {
-        let mut t = 2usize.pow(n);
-        if t < left {
-            n += 1;
-        } else {
-            let start = v.len() - left;
-            if t == left {
-                out.append(
-                    &mut __fft_common(true, &v[start..v.len()])
-                        .iter_mut()
-                        .map(|x| (x).real / (t as Float))
-                        .collect(),
-                );
-                return out;
-            } else {
-                t /= 2;
-                out.append(
-                    &mut __fft_common(true, &v[start..start + t])
-                        .iter_mut()
-                        .map(|x| (x).real / (t as Float))
-                        .collect(),
-                );
-                left -= t;
-                n = 0;
-            }
-        }
-    }
-}
+/// Correct O(N^2) DFT fallback for arbitrary lengths.
+fn dft_fallback(v:&[C],inverse:bool)->Vec<C>{let n=v.len();if n==0{return Vec::new();}let sign=if inverse{1.0}else{-1.0};(0..n).map(|k|{let mut sum=C::default();for(i,&x)in v.iter().enumerate(){sum+=C::complex_exp(sign*PI_2*k as Float*i as Float/n as Float)*x;}if inverse{sum.div(n as Float)}else{sum}}).collect()}
+pub fn fft(v:&[C])->Vec<C>{if v.len().is_power_of_two(){fft_radix2(v,false)}else{dft_fallback(v,false)}}
+pub fn ifft(v:&[C])->Vec<C>{if v.len().is_power_of_two(){fft_radix2(v,true)}else{dft_fallback(v,true)}}
+/// Real-input DFT returning the full complex spectrum.
+pub fn rfft(v:&[Float])->Vec<C>{fft(&v.iter().map(|&x|C::new(x,0.0)).collect::<Vec<C>>())}
+/// Inverse of rfft for a full complex spectrum.
+pub fn irfft(v:&[C])->Vec<Float>{ifft(v).into_iter().map(|x|x.real).collect()}
 
 // slower
 pub fn correlate_padded(ys: &[Float], window: &[Float]) -> Vec<Float> {
@@ -1044,3 +806,11 @@ pub fn gaussian_window(n: usize, std: Float) -> Vec<Float> {
 }
 
 pub fn derivative() {}
+
+#[cfg(test)] mod regression_tests{
+ use super::*;fn close(a:Float,b:Float,t:Float){assert!((a-b).abs()<=t,"{a} != {b}");}
+ #[test]fn fft_matches_dft(){for n in [0usize,1,2,3,4,5,8,10,16]{let x:Vec<C>=(0..n).map(|i|C::new(i as Float*0.25-0.5,i as Float*0.1)).collect();for(a,b)in fft(&x).iter().zip(dft(&x).iter()){close(a.real,b.real,1e-8);close(a.image,b.image,1e-8);}}}
+ #[test]fn fft_round_trip(){for n in [0usize,1,2,3,4,7,8,11,16]{let x:Vec<C>=(0..n).map(|i|C::new(i as Float*0.3,0.2-i as Float*0.05)).collect();let restored=ifft(&fft(&x));for(a,b)in restored.iter().zip(x.iter()){close(a.real,b.real,1e-8);close(a.image,b.image,1e-8);}}}
+ #[test]fn dct_round_trip(){assert!(dct_iv(&[]).is_empty());let x=[0.25,-1.0,2.0,0.5,0.75];let transformed=dct_iv_cpu(&x);let restored=inverse_dct_naive(&transformed);for(a,b)in restored.iter().zip(x.iter()){close(*a,*b,1e-8);}}
+ #[test]fn wav_header(){let mut w=Wave::new_default(vec![0;4*size_of::<Float>()]);w.set_num_channels(1);w.set_samplerate(48000);w.set_bits_per_sample((size_of::<Float>()*8)as u16);let b=w.into_vec_u8();assert_eq!(&b[..4],b"RIFF");assert_eq!(u32::from_le_bytes(b[4..8].try_into().unwrap())as usize,b.len()-8);assert_eq!(&b[8..12],b"WAVE");assert_eq!(&b[36..40],b"data");assert_eq!(u16::from_le_bytes(b[20..22].try_into().unwrap()),3);assert_eq!(u16::from_le_bytes(b[22..24].try_into().unwrap()),1);assert_eq!(u32::from_le_bytes(b[28..32].try_into().unwrap()),48000*size_of::<Float>()as u32);assert_eq!(u16::from_le_bytes(b[32..34].try_into().unwrap()),size_of::<Float>()as u16);assert_eq!(u16::from_le_bytes(b[34..36].try_into().unwrap()),(size_of::<Float>()*8)as u16);}
+}
