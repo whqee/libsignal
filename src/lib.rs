@@ -794,28 +794,48 @@ pub fn convolve(ys: &[Float], window: &[Float]) -> Vec<Float> {
 }
 
 /// FFT Version
+/// FFT implementation of causal cross-correlation.
 pub fn fft_correlate(ys: &[Float], window: &[Float]) -> Vec<Float> {
-    let pad_zero = |v: &mut Vec<Float>, n: usize| v.extend(vec![0.0; n]);
-
-    let mut ys_padded = ys.to_owned();
-    let mut padded = window.to_owned();
-    // pad 0
-    pad_zero(&mut ys_padded, ys.len());
-    pad_zero(&mut padded, ys_padded.len() - window.len());
-
-    let rfft_padded = rfft(&padded);
-    let mut rfft_ys = rfft(&ys_padded);
-
-    for i in 0..rfft_ys.len() {
-        rfft_ys[i] *= rfft_padded[i];
+    if ys.is_empty() || window.is_empty() {
+        return vec![0.0; ys.len()];
     }
-    irfft(&rfft_ys)[..ys.len()].to_owned()
+    let full_len = ys.len().checked_add(window.len() - 1)
+        .expect("correlation length overflow");
+    let fft_len = full_len.next_power_of_two();
+    let mut lhs = vec![0.0; fft_len];
+    let mut rhs = vec![0.0; fft_len];
+    lhs[..ys.len()].copy_from_slice(ys);
+    for (index, value) in window.iter().rev().enumerate() {
+        rhs[index] = *value;
+    }
+
+    let mut lhs_fft = rfft(&lhs);
+    let rhs_fft = rfft(&rhs);
+    for (left, right) in lhs_fft.iter_mut().zip(rhs_fft.iter()) {
+        *left *= *right;
+    }
+    irfft(&lhs_fft)[..ys.len()].to_vec()
 }
 
 #[inline]
 pub fn fft_convolve(ys: &[Float], window: &[Float]) -> Vec<Float> {
-    let window: Vec<Float> = window.iter().rev().map(|x| *x).collect();
-    fft_correlate(ys, &window)
+    if ys.is_empty() || window.is_empty() {
+        return vec![0.0; ys.len()];
+    }
+    let full_len = ys.len().checked_add(window.len() - 1)
+        .expect("convolution length overflow");
+    let fft_len = full_len.next_power_of_two();
+    let mut lhs = vec![0.0; fft_len];
+    let mut rhs = vec![0.0; fft_len];
+    lhs[..ys.len()].copy_from_slice(ys);
+    rhs[..window.len()].copy_from_slice(window);
+
+    let mut lhs_fft = rfft(&lhs);
+    let rhs_fft = rfft(&rhs);
+    for (left, right) in lhs_fft.iter_mut().zip(rhs_fft.iter()) {
+        *left *= *right;
+    }
+    irfft(&lhs_fft)[..ys.len()].to_vec()
 }
 
 /// Parameters: n:
@@ -917,6 +937,28 @@ mod regression_tests {
         let raw: Vec<u8> = samples.iter().flat_map(|sample| sample.to_le_bytes()).collect();
         let wave = Wave::new_default(raw);
         assert_eq!(wave.raw_as_float(), samples.to_vec());
+    }
+
+
+    #[test]
+    fn fft_convolution_and_correlation_match_direct_versions() {
+        let cases: [(&[Float], &[Float]); 3] = [
+            (&[1.0, 2.0, -1.0, 0.5], &[2.0, -1.0]),
+            (&[1.0, 2.0], &[3.0, 4.0, 5.0]),
+            (&[0.25, -0.5, 2.0, 1.5, -1.0], &[0.5, 0.25, -0.75]),
+        ];
+        for (signal, kernel) in cases {
+            let expected_conv = convolve(signal, kernel);
+            let actual_conv = fft_convolve(signal, kernel);
+            let expected_corr = correlate(signal, kernel);
+            let actual_corr = fft_correlate(signal, kernel);
+            for (left, right) in expected_conv.iter().zip(actual_conv.iter()) {
+                close(*left, *right, if size_of::<Float>() == 4 { 1e-4 } else { 1e-8 });
+            }
+            for (left, right) in expected_corr.iter().zip(actual_corr.iter()) {
+                close(*left, *right, if size_of::<Float>() == 4 { 1e-4 } else { 1e-8 });
+            }
+        }
     }
 
     #[test]
