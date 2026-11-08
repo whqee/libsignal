@@ -1,5 +1,5 @@
 #![feature(portable_simd)]
-use core::{mem::size_of, slice};
+use core::mem::size_of;
 
 // type Float = f32;
 // use core::f32::consts::PI;
@@ -149,18 +149,15 @@ impl TrigSig {
         // let t = (duration as Float) / (nums as Float);
         let t = (1 as Float) / (framerate as Float);
 
-        let mut wave = Wave::new_default(vec![0; size_of::<Float>() * nums]);
+        let mut wave = Wave::new_default(Vec::with_capacity(size_of::<Float>() * nums));
         wave.set_num_channels(1);
         wave.set_samplerate(framerate as u32);
-        wave.set_bits_per_sample(size_of::<Float>() as u16);
-        wave.subchunk2_size = (size_of::<Float>() * nums) as u32;
-
-        // let ys = wave.raw.as_mut_ptr() as *mut Float;
-
-        for i in 0..wave.raw.len() / size_of::<Float>() {
-            // unsafe { ys.add(i).write(self.evaluate(start + (i as Float) * t)) }
-            wave.raw_as_mut_float()[i] = self.evaluate(start + (i as Float) * t);
+        wave.set_bits_per_sample((size_of::<Float>() * 8) as u16);
+        for i in 0..nums {
+            let sample = self.evaluate(start + (i as Float) * t);
+            wave.raw.extend_from_slice(&sample.to_le_bytes());
         }
+        wave.subchunk2_size = wave.raw.len() as u32;
 
         println!(
             "Made a new wave, samples length = ({}*{}) {} bytes, f = {}, T = {}",
@@ -190,10 +187,9 @@ impl TrigSig {
 
         // let t = (duration as Float) / (nums as Float);
         let t = (1 as Float) / (framerate as Float);
-        let mut wave = vec![(0.0, 0.0); size_of::<Float>() * nums];
+        let mut wave = vec![(0.0, 0.0); nums];
 
         for i in 0..wave.len() {
-            // unsafe { ys.add(i).write(self.evaluate(start + (i as Float) * t)) }
             let t_now = (i as Float) * t;
             wave[i] = (t_now, self.evaluate(start + t_now));
         }
@@ -213,18 +209,15 @@ impl TrigSig {
         // let t = (duration as Float) / (nums as Float);
         let t = (1 as Float) / (framerate as Float);
 
-        let mut wave = Wave::new_default(vec![0; size_of::<Float>() * nums]);
+        let mut wave = Wave::new_default(Vec::with_capacity(size_of::<Float>() * nums));
         wave.set_num_channels(1);
         wave.set_samplerate(framerate as u32);
-        wave.set_bits_per_sample(size_of::<Float>() as u16);
-        wave.subchunk2_size = (size_of::<Float>() * nums) as u32;
-
-        // let ys = wave.raw.as_mut_ptr() as *mut Float;
-
-        for i in 0..wave.raw.len() / size_of::<Float>() {
-            // unsafe { ys.add(i).write(self.evaluate(start + (i as Float) * t)) }
-            wave.raw_as_mut_float()[i] = self.evaluate_complex(start + (i as Float) * t).real;
+        wave.set_bits_per_sample((size_of::<Float>() * 8) as u16);
+        for i in 0..nums {
+            let sample = self.evaluate_complex(start + (i as Float) * t).real;
+            wave.raw.extend_from_slice(&sample.to_le_bytes());
         }
+        wave.subchunk2_size = wave.raw.len() as u32;
 
         println!(
             "Made a new wave, samples length = ({}*{}) {} bytes, f = {}, T = {}",
@@ -265,23 +258,16 @@ impl Wave {
     }
 
     #[inline]
-    pub fn raw_as_float(&self) -> &[Float] {
-        unsafe {
-            slice::from_raw_parts(
-                self.raw.as_ptr() as *mut Float,
-                self.raw.len() / size_of::<Float>(),
-            )
-        }
-    }
-
+    /// Decode little-endian IEEE-754 samples into aligned values.
+    /// Any trailing bytes that do not form a complete sample are ignored.
     #[inline]
-    pub fn raw_as_mut_float(&mut self) -> &mut [Float] {
-        unsafe {
-            slice::from_raw_parts_mut(
-                self.raw.as_mut_ptr() as *mut Float,
-                self.raw.len() / size_of::<Float>(),
-            )
-        }
+    pub fn raw_as_float(&self) -> Vec<Float> {
+        self.raw.chunks_exact(size_of::<Float>()).map(|chunk| {
+            #[cfg(target_pointer_width = "64")]
+            { f64::from_le_bytes(chunk.try_into().expect("exact sample width")) }
+            #[cfg(target_pointer_width = "32")]
+            { f32::from_le_bytes(chunk.try_into().expect("exact sample width")) }
+        }).collect()
     }
 
     #[inline]
@@ -291,20 +277,20 @@ impl Wave {
     }
 
     #[inline]
-    /// 44100双声道 RIFF WAVE PCM/Uncompressed
+    /// Construct a mono IEEE-float RIFF/WAVE file using the platform's Float type.
     pub fn new_default(raw: Vec<u8>) -> Self {
         Self {
             chunk_id: u32::from_le_bytes(*b"RIFF"),     // b"RIFF"
-            chunk_size: 9 * 4 + raw.len() as u32,       // 9 * 4B + sizeof raw
+            chunk_size: 36 + raw.len() as u32,       // 9 * 4B + sizeof raw
             format: u32::from_le_bytes(*b"WAVE"),       // 'WAVE' - 0x57415645
             subchunk1_id: u32::from_le_bytes(*b"fmt "), // b"fmt "
             subchunk1_size: 16,                         // pcm->16
-            audio_format: 1,                            // pcm/uncompressed
-            num_channels: 2,
+            audio_format: 3, // WAVE_FORMAT_IEEE_FLOAT
+            num_channels: 1,
             sample_rate: 44100,
-            byterate: 44100 * 2 * 2, // sample_rate * num_channels * 2
-            blockalign: 2 * size_of::<Float>() as u16, // num_channels * bits_persamples
-            bits_per_sample: size_of::<Float>() as u16, // bits
+            byterate: 44100 * size_of::<Float>() as u32,
+            blockalign: size_of::<Float>() as u16,
+            bits_per_sample: (size_of::<Float>() * 8) as u16
             subchunk2_id: u32::from_le_bytes(*b"data"), // b"data"
             subchunk2_size: raw.len() as u32, // size of raw
             raw,
@@ -314,26 +300,27 @@ impl Wave {
     #[inline]
     pub fn set_samplerate(&mut self, samplerate: u32) {
         self.sample_rate = samplerate;
-        self.byterate = samplerate * self.num_channels as u32 * 2;
+        self.byterate = samplerate * self.blockalign as u32;
     }
 
     #[inline]
     pub fn set_bits_per_sample(&mut self, bits: u16) {
         self.bits_per_sample = bits;
-        self.blockalign = bits * self.num_channels;
+        self.blockalign = (bits / 8) * self.num_channels;
+        self.byterate = self.sample_rate * self.blockalign as u32;
     }
 
     #[inline]
     pub fn set_num_channels(&mut self, nums: u16) {
         self.num_channels = nums;
-        self.byterate = self.sample_rate * self.num_channels as u32 * 2;
-        self.blockalign = self.num_channels * self.num_channels;
+        self.blockalign = (self.bits_per_sample / 8) * nums;
+        self.byterate = self.sample_rate * self.blockalign as u32;
     }
 
     pub fn into_vec_u8(mut self) -> Vec<u8> {
-        self.chunk_size += self.subchunk2_size;
-        let mut v = vec![];
-        v.extend_from_slice(&self.chunk_id.to_le_bytes());
+        self.subchunk2_size = u32::try_from(self.raw.len()).expect("WAV data chunk exceeds RIFF limit");
+        self.chunk_size = 36u32.checked_add(self.subchunk2_size).expect("WAV file exceeds RIFF limit");
+        let mut v = Vec::with_capacity(44 + self.raw.len());
         v.extend_from_slice(&self.chunk_id.to_le_bytes());
         v.extend_from_slice(&self.chunk_size.to_le_bytes());
         v.extend_from_slice(&self.format.to_le_bytes());
@@ -347,9 +334,7 @@ impl Wave {
         v.extend_from_slice(&self.bits_per_sample.to_le_bytes());
         v.extend_from_slice(&self.subchunk2_id.to_le_bytes());
         v.extend_from_slice(&self.subchunk2_size.to_le_bytes());
-        println!("len {}", v.len());
         v.append(&mut self.raw);
-        println!("len {}, raw len {}", v.len(), self.subchunk2_size);
         v
     }
 
@@ -363,7 +348,7 @@ impl Wave {
 
         // let mut amps = dct_naive_transform(&ys[..]);
 
-        let amps = dct_iv(ys);
+        let amps = dct_iv(&ys);
         // let amps = dct_iv_cpu_multi_threads(ys);
 
         println!(
@@ -564,60 +549,28 @@ pub fn dct_iv(v: &[Float]) -> Vec<Float> {
 #[cfg(any(windows, unix))]
 /// info: assume len = n, the real frequents = samplerate * (0..n)+0.5 / n
 pub fn dct_iv_cpu_multi_threads(v: &[Float]) -> Vec<Float> {
-    let ys = v;
-    let n = ys.len();
-
-    // println!("ys.len = {}, n = {}", ys.len(), n);
-
-    let cpus = 12;
-    let divs = n / 12;
-
-    let mut ranges: Vec<_> = (0..cpus - 1).map(|i| i * divs..(i + 1) * divs).collect();
-    ranges.push((cpus - 1) * divs..n);
-
-    // prepare vectors
-    let ts: Vec<Float> = (0..n).map(|x| (x as Float + 0.5) / n as Float).collect();
-    // info: assume len = n, the real frequents = samplerate * (0..n) / n
-    let fs_2_pi: Vec<Float> = (0..n).map(|x| (x as Float + 0.5) * PI).collect();
-    let mut amps = vec![0.0; n];
-
-    let ts_ptr = ts.as_ptr() as usize;
-    let ts_len = ts.len();
-
-    let fs_2_pi_ptr = fs_2_pi.as_ptr() as usize;
-    let fs_2_pi_len = fs_2_pi.len();
-
-    let ys_ptr = ys.as_ptr() as usize;
-    let ys_len = ys.len();
-
-    let amps_ptr = amps.as_mut_ptr() as usize;
-    let amps_len = amps.len();
-
-    let mut handles = vec![];
-    for range in ranges {
-        handles.push(std::thread::spawn(move || {
-            // safe
-            let ts = unsafe { slice::from_raw_parts(ts_ptr as *const Float, ts_len) };
-            let fs_2_pi =
-                unsafe { slice::from_raw_parts(fs_2_pi_ptr as *const Float, fs_2_pi_len) };
-            let ys = unsafe { slice::from_raw_parts(ys_ptr as *const Float, ys_len) };
-
-            let amps = unsafe { slice::from_raw_parts_mut(amps_ptr as *mut Float, amps_len) };
-
-            for j in range {
-                let mut amp = 0.0;
-                for i in 0..n {
-                    amp += (fs_2_pi[j] * ts[i]).cos() * ys[i]
+    let n = v.len();
+    if n == 0 { return Vec::new(); }
+    let workers = std::thread::available_parallelism().map(usize::from).unwrap_or(1).min(n);
+    let chunk_size = n.div_ceil(workers);
+    let mut output = vec![0.0; n];
+    std::thread::scope(|scope| {
+        for (chunk_index, chunk) in output.chunks_mut(chunk_size).enumerate() {
+            let start = chunk_index * chunk_size;
+            scope.spawn(move || {
+                for (offset, value) in chunk.iter_mut().enumerate() {
+                    let frequency = (start + offset) as Float + 0.5;
+                    let mut sum = 0.0;
+                    for (sample_index, sample) in v.iter().enumerate() {
+                        let time = (sample_index as Float + 0.5) / n as Float;
+                        sum += (frequency * PI * time).cos() * sample;
+                    }
+                    *value = sum;
                 }
-                amps[j] = amp;
-            }
-        }));
-    }
-    handles
-        .into_iter()
-        .for_each(|handle| handle.join().unwrap());
-
-    amps
+            });
+        }
+    });
+    output
 }
 
 /// info: assume len = n, the real frequents = samplerate * (0..n)+0.5 / n
@@ -744,236 +697,84 @@ pub fn idft(v: &[C]) -> Vec<C> {
 
 /// assume len = n, the real frequents = samplerate * (0..n) / n
 fn __fft_common(inverse: bool, v: &[C]) -> Vec<C> {
-    if v.len() == 1 {
-        return v.to_vec();
+    let n = v.len();
+    if n <= 1 { return v.to_vec(); }
+    assert!(n.is_power_of_two(), "radix-2 FFT requires a power-of-two length");
+    let shift = usize::BITS - n.trailing_zeros();
+    let mut output = v.to_vec();
+    for i in 0..n {
+        let reversed = i.reverse_bits() >> shift;
+        if reversed > i { output.swap(i, reversed); }
     }
-
-    if v.len() == 2 {
-        return vec![v[0] + v[1], v[0] - v[1]];
-    }
-
-    assert!(v.len().is_power_of_two());
-
-    let sqrt_usize = |mut x: usize| {
-        let mut n = 1_usize;
-        // let mut x = v.len();
-        loop {
-            x /= 2;
-            if x == 1 {
-                break;
-            }
-            n += 1;
-        }
-        n
-    };
-    let n_sqrt_2 = sqrt_usize(v.len());
-
-    let ys = v;
-    let n = ys.len();
-
-    let mut neg_pi = -(PI);
-    if inverse {
-        neg_pi = -neg_pi;
-    }
-
-    // not recursive
-    let mut amps = vec![C::default(); n];
-    let bits_log2n = size_of::<usize>() * 8 - (n as Float).log2() as usize;
-    let mut i_amps = 0usize;
-    loop {
-        let j_amps = i_amps + 1;
-        let i_ys = i_amps.reverse_bits() >> bits_log2n;
-        let j_ys = j_amps.reverse_bits() >> bits_log2n;
-
-        amps[i_amps] = ys[i_ys] + ys[j_ys];
-        amps[j_amps] = ys[i_ys] - ys[j_ys];
-
-        i_amps += 2;
-        if i_amps >= n {
-            break;
-        }
-    }
-
-    for i in 1..n_sqrt_2 {
-        let nums_a_time = 2usize.pow(i as u32);
-        let neg_pi_div_nums_a_time = neg_pi / nums_a_time as Float;
-        // when f = 0
-        let mut j = 0;
-        loop {
-            let tmp = amps[j];
-            amps[j] = tmp + amps[j + nums_a_time];
-            amps[j + nums_a_time] = tmp - amps[j + nums_a_time];
-            j += nums_a_time + nums_a_time;
-            if j < n {
-                continue;
-            }
-            break;
-        }
-        for mut f in 1..nums_a_time {
-            let w = C::complex_exp(neg_pi_div_nums_a_time * f as Float);
-            loop {
-                let tmp = amps[f];
-                amps[f] = tmp + w * amps[f + nums_a_time];
-                amps[f + nums_a_time] = tmp - w * amps[f + nums_a_time];
-                f += nums_a_time + nums_a_time;
-                if f < n {
-                    continue;
-                }
-                break;
+    let direction = if inverse { 1.0 } else { -1.0 };
+    let mut width = 2;
+    while width <= n {
+        let half = width / 2;
+        for base in (0..n).step_by(width) {
+            for k in 0..half {
+                let angle = direction * PI_2 * k as Float / width as Float;
+                let twiddle = C::complex_exp(angle);
+                let even = output[base + k];
+                let odd = twiddle * output[base + k + half];
+                output[base + k] = even + odd;
+                output[base + k + half] = even - odd;
             }
         }
+        width *= 2;
     }
-    amps
+    output
 }
 
+/// Forward DFT. Uses radix-2 FFT for powers of two and direct DFT otherwise.
 pub fn fft(v: &[C]) -> Vec<C> {
-    if v.len() <= 1 {
-        return v.to_vec();
-    }
-    let mut n = 1;
-    let mut left = v.len();
-    let mut out = vec![];
-    loop {
-        let mut t = 2usize.pow(n);
-        if t < left {
-            n += 1;
-        } else {
-            let start = v.len() - left;
-            if t == left {
-                out.append(&mut __fft_common(false, &v[start..v.len()]));
-                return out;
-            } else {
-                println!(
-                    "v.len n left start t {} {} {} {} {}",
-                    v.len(),
-                    n,
-                    left,
-                    start,
-                    t
-                );
-                t /= 2;
-                out.append(&mut __fft_common(false, &v[start..start + t]));
-                left -= t;
-                n = 0;
-            }
-        }
+    if v.len().is_power_of_two() {
+        __fft_common(false, v)
+    } else {
+        dft(v)
     }
 }
 
+/// Inverse DFT. Uses radix-2 FFT for powers of two and direct IDFT otherwise.
 pub fn ifft(v: &[C]) -> Vec<C> {
-    if v.len() <= 1 {
-        return v.to_vec();
+    if v.is_empty() {
+        return Vec::new();
     }
-    let mut n = 1;
-    let mut left = v.len();
-    let mut out = vec![];
-    loop {
-        let mut t = 2usize.pow(n);
-        if t < left {
-            n += 1;
-        } else {
-            let start = v.len() - left;
-            if t == left {
-                out.append(&mut __fft_common(true, &v[start..v.len()]));
-                out[start..v.len()].iter_mut().for_each(|x| {
-                    (*x) = (*x).div(t as Float);
-                });
-                return out;
-            } else {
-                t /= 2;
-                out.append(&mut __fft_common(true, &v[start..start + t]));
-                out[start..start + t].iter_mut().for_each(|x| {
-                    (*x) = (*x).div(t as Float);
-                });
-                left -= t;
-                n = 0;
-            }
+    if v.len().is_power_of_two() {
+        let mut output = __fft_common(true, v);
+        let scale = v.len() as Float;
+        for value in &mut output {
+            *value = value.div(scale);
         }
+        output
+    } else {
+        idft(v)
     }
 }
 
+/// Forward transform of real-valued input, represented as a full complex spectrum.
 pub fn rfft(v: &[Float]) -> Vec<C> {
     fft(&(v.iter().map(|&x| C::new(x, 0.0)).collect::<Vec<C>>()))
 }
 
+/// Inverse of a full complex spectrum produced by rfft.
 pub fn irfft(v: &[C]) -> Vec<Float> {
-    let mut n = 0;
-    let mut left = v.len();
-    let mut out = vec![];
-    loop {
-        let mut t = 2usize.pow(n);
-        if t < left {
-            n += 1;
-        } else {
-            let start = v.len() - left;
-            if t == left {
-                out.append(
-                    &mut __fft_common(true, &v[start..v.len()])
-                        .iter_mut()
-                        .map(|x| (x).real / (t as Float))
-                        .collect(),
-                );
-                return out;
-            } else {
-                t /= 2;
-                out.append(
-                    &mut __fft_common(true, &v[start..start + t])
-                        .iter_mut()
-                        .map(|x| (x).real / (t as Float))
-                        .collect(),
-                );
-                left -= t;
-                n = 0;
-            }
-        }
-    }
+    ifft(v).into_iter().map(|value| value.real).collect()
 }
 
 // slower
 pub fn correlate_padded(ys: &[Float], window: &[Float]) -> Vec<Float> {
-    assert!(ys.len() >= window.len());
-    let ys_len = ys.len();
-
-    let mut ys_padded = vec![0.0; window.len() - 1];
-    ys_padded.extend_from_slice(&ys);
-    ys_padded.extend(vec![0.0; window.len() - 1]);
-
-    let mut window = window.to_vec();
-    let gap = ys_padded.len() - &window.len();
-    // pad 0
-    window.extend_from_slice(&vec![0.0; gap]);
-
-    let mut smoothed = vec![0.0; ys_padded.len()];
-    for i in 0..ys_padded.len() {
-        smoothed[i] = {
-            let mut sum = 0.0;
-            for i in 0..ys_padded.len() {
-                sum += ys_padded[i] * window[i]
-            }
-            sum
-        };
-        window.rotate_right(1);
-    }
-    smoothed[..ys_len].to_vec()
+    correlate(ys, window)
 }
 
 pub fn correlate(ys: &[Float], window: &[Float]) -> Vec<Float> {
-    let (ys_len, window_len) = (ys.len(), window.len());
-
-    let mut out = vec![0.0; ys_len];
-    let t = window_len - 1;
-
-    for n in 0..window_len {
-        for m in 0..=n {
-            out[n] += ys[n - m] * window[t - m]
+    let mut output = vec![0.0; ys.len()];
+    if window.is_empty() { return output; }
+    for n in 0..ys.len() {
+        for m in 0..window.len().min(n + 1) {
+            output[n] += ys[n - m] * window[window.len() - 1 - m];
         }
     }
-    for n in window_len..ys_len {
-        for m in 0..window_len {
-            out[n] += ys[n - m] * window[t - m]
-        }
-    }
-    out[..ys_len].to_owned()
+    output
 }
 
 /// Circular Version
@@ -983,20 +784,13 @@ pub fn convolve2(ys: &[Float], window: &[Float]) -> Vec<Float> {
 }
 
 pub fn convolve(ys: &[Float], window: &[Float]) -> Vec<Float> {
-    let (ys_len, window_len) = (ys.len(), window.len());
-
-    let mut out = vec![0.0; ys_len];
-    for n in 0..window_len {
-        for m in 0..=n {
-            out[n] += ys[n - m] * window[m]
+    let mut out = vec![0.0; ys.len()];
+    for n in 0..ys.len() {
+        for m in 0..window.len().min(n + 1) {
+            out[n] += ys[n - m] * window[m];
         }
     }
-    for n in window_len..ys_len {
-        for m in 0..window_len {
-            out[n] += ys[n - m] * window[m]
-        }
-    }
-    out[..ys_len].to_owned()
+    out
 }
 
 /// FFT Version
@@ -1044,3 +838,91 @@ pub fn gaussian_window(n: usize, std: Float) -> Vec<Float> {
 }
 
 pub fn derivative() {}
+
+#[cfg(test)]
+mod regression_tests {
+    use super::*;
+
+    fn close(left: Float, right: Float, tolerance: Float) {
+        assert!((left - right).abs() <= tolerance, "{left} != {right}");
+    }
+
+    #[test]
+    fn fft_matches_direct_dft_for_radix_two_lengths() {
+        for n in [1usize, 2, 4, 8, 16, 32] {
+            let input: Vec<C> = (0..n)
+                .map(|i| C::new(i as Float * 0.25 - 1.0, (i as Float * 0.3).sin()))
+                .collect();
+            let expected = dft(&input);
+            let actual = fft(&input);
+            for (left, right) in actual.iter().zip(expected.iter()) {
+                close(left.real, right.real, if size_of::<Float>() == 4 { 1e-4 } else { 1e-8 });
+                close(left.image, right.image, if size_of::<Float>() == 4 { 1e-4 } else { 1e-8 });
+            }
+        }
+    }
+
+    #[test]
+    fn fft_and_ifft_round_trip_for_arbitrary_lengths() {
+        for n in [0usize, 1, 2, 3, 5, 6, 8, 10, 17] {
+            let input: Vec<C> = (0..n)
+                .map(|i| C::new(i as Float * 0.125, (i as Float * 0.2).cos()))
+                .collect();
+            let output = ifft(&fft(&input));
+            assert_eq!(output.len(), input.len());
+            for (left, right) in output.iter().zip(input.iter()) {
+                close(left.real, right.real, 1e-8);
+                close(left.image, right.image, 1e-8);
+            }
+        }
+    }
+
+    #[test]
+    fn dct_parallel_matches_single_threaded_reference() {
+        for n in [0usize, 1, 2, 7, 12, 31] {
+            let input: Vec<Float> = (0..n).map(|i| (i as Float * 0.17).sin()).collect();
+            let expected = dct_iv_cpu(&input);
+            let actual = dct_iv_cpu_multi_threads(&input);
+            for (left, right) in actual.iter().zip(expected.iter()) {
+                close(*left, *right, if size_of::<Float>() == 4 { 1e-4 } else { 1e-8 });
+            }
+        }
+    }
+
+    #[test]
+    fn wav_float_header_is_consistent() {
+        let mut wave = Wave::new_default(Vec::new());
+        wave.set_num_channels(1);
+        wave.set_samplerate(44_100);
+        wave.set_bits_per_sample(64);
+        wave.raw.extend_from_slice(&((1.25 as Float).to_le_bytes()));
+        let bytes = wave.into_vec_u8();
+
+        assert_eq!(&bytes[0..4], b"RIFF");
+        assert_eq!(&bytes[8..12], b"WAVE");
+        assert_eq!(&bytes[12..16], b"fmt ");
+        assert_eq!(u16::from_le_bytes([bytes[20], bytes[21]]), 3);
+        assert_eq!(u16::from_le_bytes([bytes[22], bytes[23]]), 1);
+        assert_eq!(u32::from_le_bytes(bytes[28..32].try_into().unwrap()), 44_100 * size_of::<Float>() as u32);
+        assert_eq!(u16::from_le_bytes([bytes[32], bytes[33]]), size_of::<Float>() as u16);
+        assert_eq!(u16::from_le_bytes([bytes[34], bytes[35]]), (size_of::<Float>() * 8) as u16);
+        assert_eq!(&bytes[36..40], b"data");
+        assert_eq!(u32::from_le_bytes(bytes[40..44].try_into().unwrap()), size_of::<Float>() as u32);
+        assert_eq!(bytes.len(), 44 + size_of::<Float>());
+    }
+
+    #[test]
+    fn wav_float_samples_decode_without_alignment_assumptions() {
+        let samples: [Float; 3] = [0.5, -2.0, 3.25];
+        let raw: Vec<u8> = samples.iter().flat_map(|sample| sample.to_le_bytes()).collect();
+        let wave = Wave::new_default(raw);
+        assert_eq!(wave.raw_as_float(), samples.to_vec());
+    }
+
+    #[test]
+    fn convolution_handles_empty_and_oversized_windows() {
+        assert_eq!(convolve(&[1.0, 2.0], &[]), vec![0.0, 0.0]);
+        assert_eq!(convolve(&[1.0, 2.0], &[3.0, 4.0, 5.0]), vec![3.0, 10.0]);
+    }
+}
+
