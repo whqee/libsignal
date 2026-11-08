@@ -276,6 +276,22 @@ impl Wave {
         &mut self.raw
     }
 
+    /// Replace the sample payload with little-endian IEEE-754 values.
+    pub fn set_raw_from_float(&mut self, samples: &[Float]) {
+        let byte_len = samples.len().checked_mul(size_of::<Float>())
+            .expect("WAV sample payload length overflow");
+        self.raw.clear();
+        self.raw.reserve(byte_len);
+        for sample in samples {
+            self.raw.extend_from_slice(&sample.to_le_bytes());
+        }
+        self.subchunk2_size = u32::try_from(self.raw.len())
+            .expect("WAV data chunk exceeds RIFF limit");
+        self.chunk_size = 36u32.checked_add(self.subchunk2_size)
+            .expect("WAV file exceeds RIFF limit");
+    }
+
+
     #[inline]
     /// Construct a mono IEEE-float RIFF/WAVE file using the platform's Float type.
     pub fn new_default(raw: Vec<u8>) -> Self {
@@ -959,6 +975,14 @@ mod regression_tests {
                 close(*left, *right, if size_of::<Float>() == 4 { 1e-4 } else { 1e-8 });
             }
         }
+    }
+
+    #[test]
+    fn wav_samples_can_be_replaced_without_unsafe_casts() {
+        let mut wave = Wave::new_default(Vec::new());
+        wave.set_raw_from_float(&[0.25, -1.5, 2.0]);
+        assert_eq!(wave.raw_as_float(), vec![0.25 as Float, -1.5, 2.0]);
+        assert_eq!(wave.subchunk2_size as usize, 3 * size_of::<Float>());
     }
 
     #[test]
