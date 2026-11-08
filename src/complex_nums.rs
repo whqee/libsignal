@@ -49,7 +49,7 @@ macro_rules! impl_complexnums {
             }
 
             pub fn abs(&self) -> $float {
-                (self.real.powi(2) + self.image.powi(2)).sqrt()
+                self.real.hypot(self.image)
             }
 
             // #[inline]
